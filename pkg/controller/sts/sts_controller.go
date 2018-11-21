@@ -178,7 +178,7 @@ func (r *ReconcileSts) Reconcile(request reconcile.Request) (reconcile.Result, e
 		}
 
 		// Ask hook if we should wait a bit longer before updating next pod
-		if !hook.AfterPodUpdate(pod) || !hook.BeforePodUpdate(next) {
+		if !hook.PodUpdateTransition(r.log, instance, pod, next) {
 			return reconcile.Result{Requeue: true, RequeueAfter: retryInterval}, nil
 		}
 
@@ -197,11 +197,7 @@ func (r *ReconcileSts) startRollout(instance *appsv1.StatefulSet, hook hooks.STS
 	}
 
 	// Ask hooks if we can start, or wait a bit longer
-	if !hook.BeforeSTSRollout(instance) {
-		return reconcile.Result{Requeue: true, RequeueAfter: retryInterval}, nil
-	}
-
-	if !hook.BeforePodUpdate(pod) {
+	if !hook.PodUpdateTransition(r.log, instance, nil, pod) {
 		return reconcile.Result{Requeue: true, RequeueAfter: retryInterval}, nil
 	}
 
@@ -211,15 +207,22 @@ func (r *ReconcileSts) startRollout(instance *appsv1.StatefulSet, hook hooks.STS
 
 func (r *ReconcileSts) finishRollout(instance *appsv1.StatefulSet, hook hooks.STSRolloutHooks) (reconcile.Result, error) {
 	nReplicas := *instance.Spec.Replicas
-
-	instance.Spec.UpdateStrategy.RollingUpdate.Partition = &nReplicas
-	err := r.Update(context.Background(), instance)
+	pod, err := r.getPod(instance, 0)
 	if err != nil {
 		return reconcile.Result{}, err
 	}
 
-	// XXX should we call AfterPodUpdate for the last pod ?
-	hook.AfterSTSRollout(instance) // XXX do we care about return true|false ... ?
+	if !hook.PodUpdateTransition(r.log, instance, pod, nil) {
+		return reconcile.Result{Requeue: true, RequeueAfter: retryInterval}, nil
+	}
+
+	// Reset partition number to max ordinal+1, so we'll intercept the next rollout
+	instance.Spec.UpdateStrategy.RollingUpdate.Partition = &nReplicas
+	err = r.Update(context.Background(), instance)
+	if err != nil {
+		return reconcile.Result{}, err
+	}
+
 	return reconcile.Result{}, nil
 }
 

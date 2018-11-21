@@ -1,6 +1,7 @@
 package hooks
 
 import (
+	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/api/core/v1"
 )
@@ -12,21 +13,11 @@ type STSRolloutHooks interface {
 	// Name returns the hook's name
 	Name() string
 
-	// BeforeSTSRollout is called when a rollout is needed.
-	// If this function returns true, the rollout will start right away.
-	// Else, BeforeSTSRollout will be called again later.
-	BeforeSTSRollout(sts *appsv1.StatefulSet) bool
-
-	// BeforePodUpdate is called after a pod had been updated,
-	// and before we update the next pod. If it returns false,
-	// we postpone updating the next pod, and will call
-	// BeforePodUpdate again later, until we're ready to continue.
-	// The pod passed in argument is the pod we just updated.
-	// This is NOT called before we update the first statefulset
-	// pod (use BeforeSTSRollout() to control the rollout start).
-	BeforePodUpdate(pod *v1.Pod) bool
-
-	// Possible future methods (not yet supported):
-	AfterPodUpdate(pod *v1.Pod) bool
-	AfterSTSRollout(sts *appsv1.StatefulSet) bool
+	// PodUpdateTransition is called between pods updates.
+	// prev is the previously updated pod (or nil when we're starting a new rollout).
+	// next is the pod we're about to update (or nil when we just updated the last pod).
+	// If PodUpdateTransition returns true, the controller will proceed updating the next pod.
+	// If PodUpdateTransition returns false, the controller will postpone the update, and
+	// will call PodUpdateTransition again later, until it succeed.
+	PodUpdateTransition(logger logr.Logger, sts *appsv1.StatefulSet, prev, next *v1.Pod) bool
 }

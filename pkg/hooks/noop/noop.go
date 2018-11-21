@@ -18,5 +18,6 @@ func (h *Hook) Name() string {
 }
 
 func (h *Hook) PodUpdateTransition(logger logr.Logger, sts *appsv1.StatefulSet, prev, next *v1.Pod) bool {
+	logger.Info("noop PodUpdateTransition returns true")
 	return true
 }

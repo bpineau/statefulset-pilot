@@ -46,7 +46,7 @@ var (
 	// call between rollout steps. We ignore statefulsets without this label.
 	StatefulsetPilotLabelKey = "dd-statefulset-pilot"
 
-	retryInterval = 15 * time.Second
+	retryInterval = 30 * time.Second
 
 	pred = predicate.Funcs{
 		UpdateFunc: func(e event.UpdateEvent) bool {
@@ -127,11 +127,17 @@ func (r *ReconcileSts) Reconcile(request reconcile.Request) (reconcile.Result, e
 	// Fetch the hook named in StatefulsetPilotLabelKey label
 	hook, err := hookfactory.Get(instance, StatefulsetPilotLabelKey)
 	if err != nil {
-		r.log.Error(err, "unsupported or no hook type, ignoring")
+		r.log.Error(err, "unsupported or no hook type, ignoring this sts")
 		return reconcile.Result{}, nil
 	}
 
-	// sts partition and replicas are always defined (they have defaults)
+	// We mandate rollingupdate strategy with partitions
+	if instance.Spec.UpdateStrategy.RollingUpdate == nil ||
+		instance.Spec.UpdateStrategy.RollingUpdate.Partition == nil {
+		return reconcile.Result{}, nil
+	}
+
+	// Partition and replicas numbers defines our position in the rollout
 	currentPartition := *instance.Spec.UpdateStrategy.RollingUpdate.Partition
 	nReplicas := *instance.Spec.Replicas
 

@@ -36,7 +36,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
-	hooks "github.com/bpineau/statefulset-pilot/pkg/hooks/factory"
+	"github.com/bpineau/statefulset-pilot/pkg/hooks"
+	hookfactory "github.com/bpineau/statefulset-pilot/pkg/hooks/factory"
 	logf "sigs.k8s.io/controller-runtime/pkg/runtime/log"
 )
 
@@ -124,7 +125,7 @@ func (r *ReconcileSts) Reconcile(request reconcile.Request) (reconcile.Result, e
 	}
 
 	// Fetch the hook named in StatefulsetPilotLabelKey label
-	hook, err := hooks.Get(instance, StatefulsetPilotLabelKey)
+	hook, err := hookfactory.Get(instance, StatefulsetPilotLabelKey)
 	if err != nil {
 		r.log.Error(err, "unsupported or no hook type, ignoring")
 		return reconcile.Result{}, nil
@@ -136,21 +137,16 @@ func (r *ReconcileSts) Reconcile(request reconcile.Request) (reconcile.Result, e
 
 	// If there's no ongoing rollouts, we're done
 	if instance.Status.UpdateRevision == instance.Status.CurrentRevision {
-		// Ensure we did set the partition to max pod ordinal+1 to intercept next rollout
-		if currentPartition != nReplicas {
-			return r.setPartitionNumber(instance, nReplicas)
+		// Reset partition to max ordinal+1 and final hook call, if needed
+		if currentPartition == 0 {
+			return r.finishRollout(instance, hook)
 		}
 		return reconcile.Result{}, nil
 	}
 
 	// If we're at partition nReplicas, we're about to start a new rollout
 	if currentPartition == nReplicas {
-		// Ask hook if we can start, or wait a bit longer
-		if !hook.BeforeSTSRollout(instance) {
-			return reconcile.Result{Requeue: true, RequeueAfter: retryInterval}, nil
-		}
-		// Starts with the higher pod number
-		return r.setPartitionNumber(instance, currentPartition-1)
+		return r.startRollout(instance, hook)
 	}
 
 	// Retrieve the pod for the current partition
@@ -172,11 +168,17 @@ func (r *ReconcileSts) Reconcile(request reconcile.Request) (reconcile.Result, e
 	if podRevision == instance.Status.UpdateRevision && pod.Status.Phase == "Running" {
 		// We're done
 		if currentPartition == 0 {
-			return r.setPartitionNumber(instance, nReplicas)
+			return r.finishRollout(instance, hook)
+		}
+
+		// Retrieve the next pod in line
+		next, err := r.getPod(instance, currentPartition-1)
+		if err != nil {
+			return reconcile.Result{}, err
 		}
 
 		// Ask hook if we should wait a bit longer before updating next pod
-		if !hook.BeforePodUpdate(pod) {
+		if !hook.AfterPodUpdate(pod) || !hook.BeforePodUpdate(next) {
 			return reconcile.Result{Requeue: true, RequeueAfter: retryInterval}, nil
 		}
 
@@ -184,6 +186,40 @@ func (r *ReconcileSts) Reconcile(request reconcile.Request) (reconcile.Result, e
 		return r.setPartitionNumber(instance, currentPartition-1)
 	}
 
+	return reconcile.Result{}, nil
+}
+
+func (r *ReconcileSts) startRollout(instance *appsv1.StatefulSet, hook hooks.STSRolloutHooks) (reconcile.Result, error) {
+	nReplicas := *instance.Spec.Replicas
+	pod, err := r.getPod(instance, nReplicas-1)
+	if err != nil {
+		return reconcile.Result{}, err
+	}
+
+	// Ask hooks if we can start, or wait a bit longer
+	if !hook.BeforeSTSRollout(instance) {
+		return reconcile.Result{Requeue: true, RequeueAfter: retryInterval}, nil
+	}
+
+	if !hook.BeforePodUpdate(pod) {
+		return reconcile.Result{Requeue: true, RequeueAfter: retryInterval}, nil
+	}
+
+	// Starts rollout with the higher pod number
+	return r.setPartitionNumber(instance, nReplicas-1)
+}
+
+func (r *ReconcileSts) finishRollout(instance *appsv1.StatefulSet, hook hooks.STSRolloutHooks) (reconcile.Result, error) {
+	nReplicas := *instance.Spec.Replicas
+
+	instance.Spec.UpdateStrategy.RollingUpdate.Partition = &nReplicas
+	err := r.Update(context.Background(), instance)
+	if err != nil {
+		return reconcile.Result{}, err
+	}
+
+	// XXX should we call AfterPodUpdate for the last pod ?
+	hook.AfterSTSRollout(instance) // XXX do we care about return true|false ... ?
 	return reconcile.Result{}, nil
 }
 

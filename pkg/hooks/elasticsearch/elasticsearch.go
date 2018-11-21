@@ -23,7 +23,17 @@ func (h *ESHook) BeforeSTSRollout(sts *appsv1.StatefulSet) bool {
 	return true
 }
 
+func (h *ESHook) AfterSTSRollout(sts *appsv1.StatefulSet) bool {
+	fmt.Println("ES AfterSTSRollout called")
+	return true
+}
+
 func (h *ESHook) BeforePodUpdate(pod *v1.Pod) bool {
 	fmt.Println("ES BeforePodUpdate called")
+	return true
+}
+
+func (h *ESHook) AfterPodUpdate(pod *v1.Pod) bool {
+	fmt.Println("ES AfterPodUpdate called")
 	return true
 }

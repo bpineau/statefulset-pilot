@@ -20,6 +20,14 @@ func (h *Hook) BeforeSTSRollout(sts *appsv1.StatefulSet) bool {
 	return true
 }
 
+func (h *Hook) AfterSTSRollout(sts *appsv1.StatefulSet) bool {
+	return true
+}
+
 func (h *Hook) BeforePodUpdate(pod *v1.Pod) bool {
+	return true
+}
+
+func (h *Hook) AfterPodUpdate(pod *v1.Pod) bool {
 	return true
 }

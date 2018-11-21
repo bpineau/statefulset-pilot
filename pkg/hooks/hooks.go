@@ -27,6 +27,6 @@ type STSRolloutHooks interface {
 	BeforePodUpdate(pod *v1.Pod) bool
 
 	// Possible future methods (not yet supported):
-	// AfterPodUpdate(pod *v1.Pod) bool
-	// AfterSTSRollout(sts *appsv1.StatefulSet) bool
+	AfterPodUpdate(pod *v1.Pod) bool
+	AfterSTSRollout(sts *appsv1.StatefulSet) bool
 }

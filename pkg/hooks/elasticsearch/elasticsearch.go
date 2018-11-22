@@ -40,8 +40,8 @@ func beforeUpdate(logger logr.Logger, pod *v1.Pod) bool {
 		return false
 	}
 
-	if err := setAllocation(host, "none"); err != nil {
-		logger.Info("setAllocation=none failed for es pod", "pod", name)
+	if err := setAllocation(host, "new_primaries"); err != nil {
+		logger.Info("setAllocation=new_primaries failed for es pod", "pod", name)
 		return false
 	}
 

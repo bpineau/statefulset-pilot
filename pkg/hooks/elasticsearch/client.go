@@ -8,7 +8,7 @@ import (
 	resty "gopkg.in/resty.v1"
 )
 
-var timeout = time.Duration(10 * time.Second)
+var timeout = time.Duration(60 * time.Second)
 
 type ESHealth struct {
 	Status  string `json:"status"`
@@ -16,7 +16,6 @@ type ESHealth struct {
 }
 
 type ESSettings struct {
-	// XXX or should we rather use "transient"?
 	Persistent ESPersistentSetting `json:"persistent"`
 }
 
@@ -39,31 +38,13 @@ type ESFlushShards struct {
 }
 
 func flushSync(host string) error {
-	resp, err := resty.
+	_, err := resty.
 		SetRedirectPolicy(resty.FlexibleRedirectPolicy(5)).
 		SetRetryCount(3).
 		SetTimeout(timeout).R().
 		Post(fmt.Sprintf("http://%s:9200/_flush/synced", host))
 
-	if err != nil {
-		return err
-	}
-
-	if resp.StatusCode() != 200 {
-		return fmt.Errorf("/_flush/synced http status code was %d for %s",
-			resp.StatusCode(), host)
-	}
-
-	m := ESFlush{}
-	if err := json.Unmarshal(resp.Body(), &m); err != nil {
-		return err
-	}
-
-	if m.Shards.Failed > 0 {
-		return fmt.Errorf("/_flush/synced show some failed shards for %s", host)
-	}
-
-	return nil
+	return err
 }
 
 func setAllocation(host string, target string) error {

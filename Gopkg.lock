@@ -845,6 +845,7 @@
     "github.com/go-logr/logr",
     "github.com/onsi/ginkgo",
     "github.com/onsi/gomega",
+    "github.com/pkg/errors",
     "gopkg.in/resty.v1",
     "k8s.io/api/apps/v1",
     "k8s.io/api/core/v1",

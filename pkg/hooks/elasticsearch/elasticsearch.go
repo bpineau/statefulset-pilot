@@ -1,9 +1,10 @@
 package elasticsearch
 
 import (
+	"fmt"
+
 	"github.com/bpineau/statefulset-pilot/pkg/hooks"
-	"github.com/go-logr/logr"
-	appsv1 "k8s.io/api/apps/v1"
+	"github.com/pkg/errors"
 	"k8s.io/api/core/v1"
 )
 
@@ -17,55 +18,51 @@ func (h *ESHook) Name() string {
 	return "elasticsearch"
 }
 
-func (h *ESHook) PodUpdateTransition(logger logr.Logger, sts *appsv1.StatefulSet, prev, next *v1.Pod) bool {
-	// next is nil if we just updated the last pod in the rollout
-	if next == nil {
-		return afterUpdate(logger, prev)
+func (h *ESHook) PodUpdateTransition(prev, next *v1.Pod) error {
+	// prev or next may be nil, when we're on the rollout's first or last pod
+	if prev != nil {
+		if err := afterUpdate(prev); err != nil {
+			return errors.Wrap(err, fmt.Sprintf("pod: %s", prev.GetName()))
+		}
 	}
 
-	// prev is nil if we're about to update the first pod in the rollout
-	if prev == nil {
-		return beforeUpdate(logger, next)
+	if next != nil {
+		if err := beforeUpdate(next); err != nil {
+			return errors.Wrap(err, fmt.Sprintf("pod: %s", next.GetName()))
+		}
 	}
 
-	return afterUpdate(logger, prev) && beforeUpdate(logger, next)
+	return nil
 }
 
-func beforeUpdate(logger logr.Logger, pod *v1.Pod) bool {
+func beforeUpdate(pod *v1.Pod) error {
 	host := pod.Status.PodIP
-	name := pod.GetName()
 
 	if err := isGreen(host); err != nil {
-		logger.Info("es pod not yet green", "pod", name, "error", err)
-		return false
+		return errors.Wrap(err, "es cluster not yet green")
 	}
 
 	if err := setAllocation(host, "new_primaries"); err != nil {
-		logger.Info("setAllocation=new_primaries failed for es pod", "pod", name)
-		return false
+		return errors.Wrap(err, "failed to set allocation to new_primaries")
 	}
 
 	if err := flushSync(host); err != nil {
-		logger.Info("flushSync for es pod", "pod", name, "error", err)
-		return false
+		return errors.Wrap(err, "flush sync failed for es pod")
 	}
 
-	return true
+	return nil
 }
 
-func afterUpdate(logger logr.Logger, pod *v1.Pod) bool {
+func afterUpdate(pod *v1.Pod) error {
 	host := pod.Status.PodIP
-	name := pod.GetName()
 
 	if err := setAllocation(host, "all"); err != nil {
-		logger.Info("setAllocation=all failed for es pod", "pod", name)
-		return false
+		return errors.Wrap(err, "failed to set allocation to all")
 	}
 
 	if err := isGreen(host); err != nil {
-		logger.Info("es pod not yet green", "pod", name, "error", err)
-		return false
+		return errors.Wrap(err, "es cluster not yet green")
 	}
 
-	return true
+	return nil
 }

@@ -2,8 +2,6 @@ package noop
 
 import (
 	"github.com/bpineau/statefulset-pilot/pkg/hooks"
-	"github.com/go-logr/logr"
-	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/api/core/v1"
 )
 
@@ -17,7 +15,6 @@ func (h *Hook) Name() string {
 	return "noop"
 }
 
-func (h *Hook) PodUpdateTransition(logger logr.Logger, sts *appsv1.StatefulSet, prev, next *v1.Pod) bool {
-	logger.Info("noop PodUpdateTransition returns true")
-	return true
+func (h *Hook) PodUpdateTransition(prev, next *v1.Pod) error {
+	return nil
 }

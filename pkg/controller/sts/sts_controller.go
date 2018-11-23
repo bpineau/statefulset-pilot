@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -47,6 +48,7 @@ var (
 	StatefulsetPilotLabelKey = "dd-statefulset-pilot"
 
 	retryInterval = 30 * time.Second
+	retryMessage  = "Not yet ready for update, will retry"
 
 	pred = predicate.Funcs{
 		UpdateFunc: func(e event.UpdateEvent) bool {
@@ -72,9 +74,10 @@ func Add(mgr manager.Manager) error {
 // newReconciler returns a new reconcile.Reconciler
 func newReconciler(mgr manager.Manager) reconcile.Reconciler {
 	return &ReconcileSts{
-		Client: mgr.GetClient(),
-		scheme: mgr.GetScheme(),
-		log:    logf.Log.WithName("reconcile"),
+		Client:   mgr.GetClient(),
+		scheme:   mgr.GetScheme(),
+		recorder: mgr.GetRecorder("statefulset-pilot"),
+		log:      logf.Log.WithName("reconcile"),
 	}
 }
 
@@ -104,8 +107,9 @@ var _ reconcile.Reconciler = &ReconcileSts{}
 // ReconcileSts reconciles a statefulset object
 type ReconcileSts struct {
 	client.Client
-	scheme *runtime.Scheme
-	log    logr.Logger
+	scheme   *runtime.Scheme
+	recorder record.EventRecorder
+	log      logr.Logger
 }
 
 // Reconcile make cluster changes according to the statefulset spec.
@@ -115,6 +119,7 @@ func (r *ReconcileSts) Reconcile(request reconcile.Request) (reconcile.Result, e
 
 	// Fetch the sts instance
 	instance := &appsv1.StatefulSet{}
+	name := request.NamespacedName.String()
 	err := r.Get(context.TODO(), request.NamespacedName, instance)
 	if err != nil {
 		if errors.IsNotFound(err) {
@@ -127,7 +132,6 @@ func (r *ReconcileSts) Reconcile(request reconcile.Request) (reconcile.Result, e
 	// Fetch the hook named in StatefulsetPilotLabelKey label
 	hook, err := hookfactory.Get(instance, StatefulsetPilotLabelKey)
 	if err != nil {
-		r.log.Error(err, "unsupported or no hook type, ignoring this sts")
 		return reconcile.Result{}, nil
 	}
 
@@ -151,7 +155,7 @@ func (r *ReconcileSts) Reconcile(request reconcile.Request) (reconcile.Result, e
 	}
 
 	// If we're at partition nReplicas, we're about to start a new rollout
-	if currentPartition == nReplicas {
+	if currentPartition >= nReplicas {
 		return r.startRollout(instance, hook)
 	}
 
@@ -164,8 +168,7 @@ func (r *ReconcileSts) Reconcile(request reconcile.Request) (reconcile.Result, e
 	// Revision label is maintained by statefulset controller
 	podRevision, ok := pod.GetLabels()[appsv1.StatefulSetRevisionLabel]
 	if !ok {
-		err := fmt.Errorf("pod missing %s label: %s",
-			appsv1.StatefulSetRevisionLabel, pod.GetName())
+		err := fmt.Errorf("pod missing revision label: %s", pod.GetName())
 		r.log.Error(err, "stsns", instance.GetNamespace(), "stsname", instance.GetName())
 		return reconcile.Result{}, err
 	}
@@ -184,7 +187,8 @@ func (r *ReconcileSts) Reconcile(request reconcile.Request) (reconcile.Result, e
 		}
 
 		// Ask hook if we should wait a bit longer before updating next pod
-		if !hook.PodUpdateTransition(r.log, instance, pod, next) {
+		if err := hook.PodUpdateTransition(pod, next); err != nil {
+			r.log.Info(retryMessage, "statefulset", name, "reason", err.Error())
 			return reconcile.Result{Requeue: true, RequeueAfter: retryInterval}, nil
 		}
 
@@ -197,15 +201,21 @@ func (r *ReconcileSts) Reconcile(request reconcile.Request) (reconcile.Result, e
 
 func (r *ReconcileSts) startRollout(instance *appsv1.StatefulSet, hook hooks.STSRolloutHooks) (reconcile.Result, error) {
 	nReplicas := *instance.Spec.Replicas
+	name := fmt.Sprintf("%s/%s", instance.GetNamespace(), instance.GetName())
+
 	pod, err := r.getPod(instance, nReplicas-1)
 	if err != nil {
 		return reconcile.Result{}, err
 	}
 
 	// Ask hooks if we can start, or wait a bit longer
-	if !hook.PodUpdateTransition(r.log, instance, nil, pod) {
+	if err := hook.PodUpdateTransition(nil, pod); err != nil {
+		r.log.Info(retryMessage, "statefulset", name, "reason", err.Error())
 		return reconcile.Result{Requeue: true, RequeueAfter: retryInterval}, nil
 	}
+
+	r.recorder.Eventf(instance, "Normal", "Started", "starting %s rollout", name)
+	r.log.Info("starting statefulset rollout", "name", name, "hook", hook.Name())
 
 	// Starts rollout with the higher pod number
 	return r.setPartitionNumber(instance, nReplicas-1)
@@ -213,12 +223,15 @@ func (r *ReconcileSts) startRollout(instance *appsv1.StatefulSet, hook hooks.STS
 
 func (r *ReconcileSts) finishRollout(instance *appsv1.StatefulSet, hook hooks.STSRolloutHooks) (reconcile.Result, error) {
 	nReplicas := *instance.Spec.Replicas
+	name := fmt.Sprintf("%s/%s", instance.GetNamespace(), instance.GetName())
+
 	pod, err := r.getPod(instance, 0)
 	if err != nil {
 		return reconcile.Result{}, err
 	}
 
-	if !hook.PodUpdateTransition(r.log, instance, pod, nil) {
+	if err := hook.PodUpdateTransition(pod, nil); err != nil {
+		r.log.Info(retryMessage, "statefulset", name, "reason", err.Error())
 		return reconcile.Result{Requeue: true, RequeueAfter: retryInterval}, nil
 	}
 
@@ -229,14 +242,15 @@ func (r *ReconcileSts) finishRollout(instance *appsv1.StatefulSet, hook hooks.ST
 		return reconcile.Result{}, err
 	}
 
+	r.recorder.Eventf(instance, "Normal", "Finished ", "finished %s rollout", name)
+	r.log.Info("finished statefulset rollout", "name", name, "hook", hook.Name())
+
 	return reconcile.Result{}, nil
 }
 
 func (r *ReconcileSts) setPartitionNumber(instance *appsv1.StatefulSet, pos int32) (reconcile.Result, error) {
-	r.log.Info("updating statefulset partition",
-		"namespace", instance.GetNamespace(),
-		"name", instance.GetName(),
-		"partition", pos)
+	r.log.Info("updating statefulset partition", "namespace", instance.GetNamespace(),
+		"name", instance.GetName(), "partition", pos)
 
 	instance.Spec.UpdateStrategy.RollingUpdate.Partition = &pos
 	if err := r.Update(context.Background(), instance); err != nil {
@@ -251,8 +265,7 @@ func (r *ReconcileSts) getPod(instance *appsv1.StatefulSet, pos int32) (*v1.Pod,
 		Name:      fmt.Sprintf("%s-%d", instance.GetName(), pos),
 	}
 	pod := &v1.Pod{}
-	err := r.Get(context.TODO(), podName, pod)
-	if err != nil {
+	if err := r.Get(context.TODO(), podName, pod); err != nil {
 		return nil, err
 	}
 	return pod, nil
